@@ -2,12 +2,13 @@ provider "aws" {
   region = "us-east-1"
 }
 
+
 data "terraform_remote_state" "db" {
   backend = "s3"
 
   config {
-    bucket = "terraform-up-and-running-state-jo"
-    key    = "stage/data-stores/mysql/terraform.tfstate"
+    bucket = "${var.db_remote_state_bucket}"
+    key    = "${var.db_remote_state_key}"
     region = "us-east-1"
   }
 }
@@ -52,7 +53,7 @@ data "aws_availability_zones" "all" {}
 
 resource "aws_autoscaling_group" "example" {
   launch_configuration = "${aws_launch_configuration.example.id}"
-  availability_zones = ["${data.aws_availability_zones.all.names}"]
+  availability_zones   = ["${data.aws_availability_zones.all.names}"]
 
   load_balancers    = ["${aws_elb.example.name}"]
   health_check_type = "ELB"
