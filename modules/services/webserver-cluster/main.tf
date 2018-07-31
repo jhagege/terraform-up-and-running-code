@@ -9,21 +9,36 @@ data "terraform_remote_state" "db" {
 }
 
 data "template_file" "user_data" {
+  count = "${1 - var.enable_new_user_data}"
+
   template = "${file("${path.module}/user-data.sh")}"
 
   vars {
     server_port = "${var.server_port}"
-    db_address = "${data.terraform_remote_state.db.address}"
-    db_port = "${data.terraform_remote_state.db.port}"
+    db_address  = "${data.terraform_remote_state.db.address}"
+    db_port     = "${data.terraform_remote_state.db.port}"
+  }
+}
+
+data "template_file" "user_data_new" {
+  count = "${var.enable_new_user_data}"
+
+  template = "${file("${path.module}/user-data-new.sh")}"
+
+  vars {
+    server_port = "${var.server_port}"
   }
 }
 
 resource "aws_launch_configuration" "example" {
-  image_id = "ami-40d28157"
-  instance_type = "${var.instance_type}"
-  security_groups = [
-    "${aws_security_group.instance.id}"]
-  user_data = "${data.template_file.user_data.rendered}"
+  image_id        = "ami-40d28157"
+  instance_type   = "${var.instance_type}"
+  security_groups = ["${aws_security_group.instance.id}"]
+
+  user_data = "${element(
+    concat(data.template_file.user_data.*.rendered,
+           data.template_file.user_data_new.*.rendered),
+    0)}"
 
   lifecycle {
     create_before_destroy = true
@@ -38,14 +53,15 @@ resource "aws_security_group" "instance" {
   }
 }
 
-resource "aws_security_group_rule" "allow_http_inbound" {
-  type              = "ingress"
+resource "aws_security_group_rule" "allow_server_http_inbound" {
+  type = "ingress"
   security_group_id = "${aws_security_group.instance.id}"
 
-  from_port   = 80
-  to_port     = 80
-  protocol    = "tcp"
-  cidr_blocks = ["0.0.0.0/0"]
+  from_port = 80
+  to_port = 80
+  protocol = "tcp"
+  cidr_blocks = [
+    "0.0.0.0/0"]
 }
 
 data "aws_availability_zones" "all" {}
@@ -97,21 +113,62 @@ resource "aws_security_group" "elb" {
 }
 
 resource "aws_security_group_rule" "allow_http_inbound" {
-  type              = "ingress"
+  type = "ingress"
   security_group_id = "${aws_security_group.elb.id}"
 
-  from_port   = 80
-  to_port     = 80
-  protocol    = "tcp"
-  cidr_blocks = ["0.0.0.0/0"]
+  from_port = 80
+  to_port = 80
+  protocol = "tcp"
+  cidr_blocks = [
+    "0.0.0.0/0"]
 }
 
 resource "aws_security_group_rule" "allow_all_outbound" {
-  type              = "egress"
+  type = "egress"
   security_group_id = "${aws_security_group.elb.id}"
 
-  from_port   = 0
-  to_port     = 0
-  protocol    = "-1"
-  cidr_blocks = ["0.0.0.0/0"]
+  from_port = 0
+  to_port = 0
+  protocol = "-1"
+  cidr_blocks = [
+    "0.0.0.0/0"]
+}
+
+resource "aws_autoscaling_schedule" "scale_out_during_business_hours" {
+  count = "${var.enable_autoscaling}"
+
+  scheduled_action_name = "scale-out-during-business-hours"
+  min_size = 2
+  max_size = 10
+  desired_capacity = 10
+  recurrence = "0 9 * * *"
+  autoscaling_group_name = "${aws_autoscaling_group.example.name}"
+}
+
+resource "aws_autoscaling_schedule" "scale_in_at_night" {
+  count = "${var.enable_autoscaling}"
+
+  scheduled_action_name = "scale-in-at-night"
+  min_size = 2
+  max_size = 10
+  desired_capacity = 2
+  recurrence = "0 17 * * *"
+  autoscaling_group_name = "${aws_autoscaling_group.example.name}"
+}
+
+resource "aws_cloudwatch_metric_alarm" "high_cpu_utilization" {
+  alarm_name = "${var.cluster_name}-high-cpu-utilization"
+  namespace = "AWS/EC2"
+  metric_name = "CPUUtilization"
+
+  dimensions = {
+    AutoScalingGroupName = "${aws_autoscaling_group.example.name}"
+  }
+
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods = 1
+  period = 300
+  statistic = "Average"
+  threshold = 90
+  unit = "Percent"
 }
